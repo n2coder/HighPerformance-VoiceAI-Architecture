@@ -4,6 +4,8 @@
 
 > This repository documents the architecture, trade-offs, and optimizations behind building a **low-latency, real-time Movie Recommendation Voice Agent** that behaves like a *human conversation*, not a walkie-talkie.
 
+![Architecture Diagram](./222.png)
+
 ---
 
 ## ❌ The Problem: The “Turn-Based” Trap

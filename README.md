@@ -2,7 +2,9 @@
 
 ### From Turn-Based Pipelines → Continuous Conversational Systems
 
-> This repository documents the architecture, trade-offs, and optimizations behind building a **low-latency, real-time Movie Recommendation Voice Agent** that behaves like a *human conversation*, not a walkie-talkie.
+This repository explores the architecture, trade-offs, and optimizations behind building a **low-latency, real-time Movie Recommendation Voice Agent** that behaves more like a human conversation than a turn-based system.
+
+## 📊 Architecture Overview
 
 ![Architecture Diagram](./222.png)
 
@@ -10,255 +12,241 @@
 
 ## ❌ The Problem: The “Turn-Based” Trap
 
-Most voice systems still follow:
+Most voice systems follow a linear pipeline:
 
 ```
 STT → LLM → TTS
 ```
 
-This creates fundamental limitations:
+This introduces fundamental limitations:
 
 * 🧠 **Context Loss**
-  Long-form speech (30–60s) breaks coherence or exceeds buffer limits.
+  Long-form speech (30–60 seconds) can break coherence or exceed buffer limits before reaching the model.
 
 * ⏱️ **Robotic Latency**
-  Systems wait for *complete transcripts* → causing dead air.
+  Systems wait for complete transcripts, creating noticeable “dead air.”
 
 * 🌐 **Protocol Bottlenecks**
-  WebSockets introduce jitter and are not optimized for real-time media.
+  WebSockets (TCP) introduce head-of-line blocking, making them suboptimal for real-time audio streaming.
 
 ---
 
 ## ⚡ Core Design Principle
 
-> **Never wait. Always stream. Always overlap.**
+> **“Never wait. Always stream.”**
 
 Human conversation is:
 
-* Parallel (listen + think + speak together)
+* Parallel (listen + think + speak simultaneously)
 * Interruptible
 * Context-aware in real-time
 
-This system is designed to replicate that.
+This system attempts to move closer to that behavior.
 
 ---
 
-## 🏗️ Architecture Overview
+## 🏗️ Architecture: The Streaming Brain
 
-```
-User (Speech)
-   │
-   ▼
-WebRTC (Low-latency transport)
-   │
-   ▼
-Streaming STT (Partial transcripts)
-   │
-   ▼
-Redis (Hot Context Layer)
-   │
-   ├── Background Summarizer (Intent extraction)
-   ▼
-Streaming LLM (Token generation)
-   │
-   ▼
-Sentence Chunker
-   │
-   ▼
-Streaming TTS
-   │
-   ▼
-User (Audio Playback)
+```mermaid
+graph TD
+    User((User)) -- WebRTC Audio --> STT[Streaming STT]
+    STT -- Partial Fragments --> Redis[(Redis Hot Memory)]
+    
+    subgraph Hybrid Intelligence Layer
+        Redis --> Regex[Regex: Deterministic Extraction]
+        Redis --> NLU[NLU: Intent & Entity Recognition]
+    end
+
+    Regex --> Summarizer[Incremental Summarizer]
+    NLU --> Summarizer
+
+    Summarizer --> LLM[Streaming LLM]
+    LLM -- Token Stream --> Chunker[Sentence Chunker]
+    Chunker --> TTS[Streaming TTS]
+    TTS -- Low Latency Audio --> User
 ```
 
 ---
 
-## 🛠️ Core Optimizations
+## 🛠️ Core Optimizations & Features
 
 ### 1. 🚀 Transport Layer: WebRTC over WebSockets
 
 **Problem:**
-WebSockets = reliable, but not real-time optimized.
+WebSockets are reliable but introduce jitter for real-time audio.
 
 **Solution:**
-Shifted to **WebRTC (UDP-based streaming)**
+Switched to **WebRTC (UDP-based streaming)**.
 
 **Impact:**
 
+* Lower latency
 * Reduced jitter
-* Sub-second round-trip latency
 * True bidirectional audio streaming
 
 ---
 
-### 2. 🧠 Streaming Context with Redis (Hot Memory Layer)
+### 2. 🧠 Streaming Context with Redis (Hot Memory)
 
 **Problem:**
-Waiting for final transcripts → context delay + overflow
+Waiting for final transcripts delays reasoning.
 
 **Solution:**
 
 * Push **partial STT fragments** into Redis
-* Run **background summarization workers**
-* Continuously update conversation state
+* Use **incremental summarization** in the background
 
 **Impact:**
 
-* LLM is *pre-conditioned* before user finishes speaking
-* Eliminates “thinking delay”
+* LLM receives context early
+* Reduces perceived “thinking delay”
 
 ---
 
-### 3. 🎧 Intelligent Barge-In (VAD Optimization)
+### 3. 🎯 Hybrid Intelligence Layer (NLU + Regex)
 
-**Problem:**
+To improve responsiveness, the system separates **reflexes** from **reasoning**:
 
-* Either too sensitive (noise triggers)
-* Or too strict (ignores user interruption)
+* ⚡ **Regex (Reflex Layer)**
+  Instantly extracts structured data
 
-**Solution:**
+  * Example: years (“1994”), ratings (“above 8.0”)
 
-* Multi-threshold **Voice Activity Detection (VAD)**
-* Dynamic sensitivity tuning
-* Interrupt-aware playback control
+* 🧠 **NLU (Understanding Layer)**
+
+  * Intent classification
+  * Entity recognition (genres, actors, etc.)
 
 **Impact:**
 
-* Seamless user interruption
-* Robust against ambient noise
+* Deterministic accuracy for structured inputs
+* Reduced dependency on LLM for simple tasks
 
 ---
 
-### 4. 🗣️ Sentence-Level Streaming (Parallel Thinking + Speaking)
-
-**Problem:**
-Waiting for full LLM output = 3–5s silence
+### 4. 🎧 Intelligent Barge-In (VAD Optimization)
 
 **Solution:**
 
-* Stream tokens → group into **sentence chunks**
-* Trigger TTS per sentence
+* Multi-threshold Voice Activity Detection (VAD)
+* Differentiates between:
 
-**Flow:**
+  * Backchanneling (“uh-huh”)
+  * Actual interruption
 
-```
-Sentence 1 → TTS starts
-Sentence 2 → still generating
-Sentence 3 → queued
-```
+**Impact:**
+
+* Smooth user interruptions
+* Reduced false triggers from noise
+
+---
+
+### 5. 🗣️ Sentence-Level Streaming
+
+**Problem:**
+Waiting for full responses causes 3–5s delays.
+
+**Solution:**
+
+* Stream LLM tokens
+* Group into **sentence chunks**
+* Send each sentence immediately to TTS
 
 **Impact:**
 
 * Near-zero perceived latency
-* Human-like response flow
+* More natural response flow
 
 ---
 
-## 📊 Data Flow (Real-Time Execution)
+## 📊 Performance Benchmarks
 
+| Metric               | Result       |
+| -------------------- | ------------ |
+| First audio response | < 450ms      |
+| Full-duplex latency  | ~650ms       |
+| Barge-in response    | < 180ms      |
+| Context recovery     | Near-instant |
+
+---
+
+## 🧪 Example: Hybrid Extraction
+
+```python
+import re
+
+def process_stream(partial_text):
+    # REGEX: Instant extraction of 'Year'
+    year = re.search(r'\b(19|20)\d{2}\b', partial_text)
+    
+    # NLU: Simplified intent detection
+    intent = "recommend" if "show me" in partial_text.lower() else "chat"
+    
+    return {
+        "year": year.group(0) if year else None,
+        "intent": intent
+    }
+
+# This data is continuously pushed into the LLM context
 ```
-Audio (20–50ms chunks)
-   ↓
-Partial STT
-   ↓
-Redis (live context update)
-   ↓
-LLM token stream
-   ↓
-Sentence segmentation
-   ↓
-TTS streaming
-   ↓
-Immediate playback
-```
-
----
-
-## ⏱️ Performance Benchmarks
-
-| Metric               | Result    |
-| -------------------- | --------- |
-| First audio response | < 500ms   |
-| Full-duplex latency  | ~700ms    |
-| Barge-in response    | < 200ms   |
-| Perceived delay      | Near-zero |
-
----
-
-## 🧪 Real-World Use Case
-
-🎬 **Movie Recommendation Voice Agent**
-
-* Handles long user preferences (“I like Nolan-style sci-fi…”)
-* Responds while user is still forming thoughts
-* Supports interruption mid-response
-
----
-
-## 🧩 System Design Insights
-
-### 🔹 1. Latency is architectural, not computational
-
-Throwing GPUs ≠ solving delay
-**Streaming pipelines > raw compute**
-
----
-
-### 🔹 2. Context must be “alive”
-
-Static prompts fail in voice systems
-Use **hot memory layers (Redis)**
-
----
-
-### 🔹 3. Voice ≠ Chat
-
-Chat = turn-based
-Voice = **continuous state machine**
 
 ---
 
 ## 🚀 Getting Started
 
-```bash
-git clone https://github.com/<your-username>/realtime-voice-ai
-cd realtime-voice-ai
+### 1. Clone the Repository
 
+```bash
+git clone https://github.com/n2coder/LumaMovieAgent
+cd LumaMovieAgent
+```
+
+---
+
+### 2. Install Dependencies
+
+```bash
 pip install -r requirements.txt
+```
+
+---
+
+### 3. Start Redis (Context Layer)
+
+```bash
+docker run -d -p 6379:6379 redis
+```
+
+---
+
+### 4. Run the Application
+
+```bash
 uvicorn app.main:app --reload
 ```
 
 ---
 
-## 📌 Roadmap
+## 🤝 Contributing & Exploration
 
-* [ ] Full-duplex WebRTC pipeline
-* [ ] Emotion-aware TTS modulation
-* [ ] RAG integration for long-term memory
-* [ ] Edge deployment (sub-200ms latency target)
+Currently exploring:
 
----
+* Emotion-aware TTS modulation
+* Vector DB (RAG) for long-term memory
+* Further latency optimizations
 
-## 🤝 Contributing
-
-If you're working on:
-
-* VAD tuning
-* Real-time RAG
-* Streaming inference optimization
-
-Feel free to open an issue or collaborate.
+Feel free to open issues or share ideas.
 
 ---
 
 ## 🧑‍💻 Author
 
 **Naresh Chaudhary**
-Building systems at the intersection of **AI × Real-Time Interaction × Human Cognition**
+Exploring AI systems at the intersection of **real-time interaction, cognition, and system design**
 
 ---
 
 ## ⭐ Final Thought
 
-> The future of AI is not faster responses.
-> It’s **continuous thinking systems that never pause.**
+> The future of voice AI is not faster responses.
+> It’s systems that **never stop thinking while you speak.**
